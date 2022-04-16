@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "options_simulation"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+tardis-dev = "^2.0.0-alpha.10"
+python-dotenv = "^0.20.0"
+wdb = "^3.3.0"
+cryptocompare = "^0.7.5"
+pandas = "^1.4.2"
+matplotlib = "^3.5.1"
+empyrical = "^0.5.5"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
