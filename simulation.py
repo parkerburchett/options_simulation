@@ -1,3 +1,6 @@
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning) # surpresses the DataFrame.append()
+
 import pandas as pd
 import numpy as np
 import time
@@ -40,7 +43,8 @@ def ensure_option_series(option):
     return option if (isinstance(option, pd.Series)) else option.iloc[0]
 
 def timedelta_to_float(days_to_expiration):
-    return days_to_expiration.total_seconds() / (3600*24)
+    d = datetime.datetime(days_to_expiration)
+    return d.total_seconds() / (3600*24)
 
 def negative_deltas(df):
     return df[df.delta < 0]
@@ -51,15 +55,22 @@ def positive_deltas(df):
 
 
 def filter_deltas(df):
+    """
+    These are tuneable. 
+    """
     return df[((df.delta > -0.50) & (df.delta < -0.25)) | ((df.delta < 0.5) & (df.delta > 0.25))]
 
 
 def filter_expiration(df):
+    """
+    Returns the subset of options where there is between 45 and 70 days to expiry. Unclear why these numbers where picked
+    These are tuneable parameters. have them be the knobs
+    """
     return df[(df['days_to_expiration'] > datetime.timedelta(days=45)) & (
                 df['days_to_expiration'] < datetime.timedelta(days=70))]
 
 
-def filter_datetime(df, start, end):
+def filter_datetime(df, start, end): # start and end are None
     return df[(df['datetime'] >= start) & (df['datetime'] <= end)]
 
 
@@ -74,48 +85,61 @@ class Simulation:
         self.portfolio_delta = 0
         self.positions = pd.DataFrame(
             columns=COLUMNS + ['num_contracts', 'position_delta', 'collateral_locked', 'liability_amount', 'position_open_price', 'p/l'])
-        self.files = self.get_files()
+        self.files =  self.get_a_file() # self.get_files()
         self.current_time = None
         self.end_sample_time = None
         # Use to check if any options significantly deviate
         self.median_iv = None
         self.risk_free = risk_free_rate
         self.statistics_overtime = []
+    
+    def get_a_file(self):
+        return ['deribit_options_chain_2020-03-01_OPTIONS.csv.gz']
+
+    def run_on_filtered(self, filtered_dfs:list[pd.DataFrame]):
+        results = []
+        for filtered in filtered_dfs:
+            while not filtered.empty:
+                    print(f'options to choose from {len(filtered)}')
+                    self.add_positions(filtered)
+                    self.mark_portfolio()
+                    self.find_and_close_positions()
+                    self.mark_portfolio()
+                    self.timestamp_statistics()
+                    self.set_times()
+                    filtered = self.get_filtered_options()
+            results.append(self.statistics_overtime)
+        # print(generate_risk_return_metrics_historical()[-1])
+        return results
 
     def run(self):
-        faulthandler.enable()
-        failed = None
-        with trace():
-            for file in self.files:
-                try:
-                    self.load_file_to_dataframe(file)
-                    if failed:
-                        self.set_times(override=True)
-                        failed = None
-                    else:
-                        self.set_times()
+        for file in self.files:
+            try:
+                self.load_file_to_dataframe(file)
+                self.set_times()
+                filtered = self.get_filtered_options() # this is a universe of only 2k rows. If it is that large for every file they can just do 
+                # do the filtering on their end and save it in the repo. 
+                #if self.portfolio_delta >= 200 or self.portfolio_delta <= -200:
+                #    wdb.set_trace()
+                while not filtered.empty:
+                    self.add_positions(filtered)
+                    self.mark_portfolio()
+                    self.find_and_close_positions() # this figures out what postions to close to 
+                    self.mark_portfolio()
+                    self.timestamp_statistics()
+                    self.set_times()
+                    # if self.equity < 700000:
+                    #     wdb.set_trace() # No idea what this does
+                    # print(f'current time: {self.current_time}')
+                    # print(f'portfolio delta: {self.portfolio_delta}')
+                    # print(f'cash: {self.cash}, equity: {self.equity}, liabilities: ${self.liabilities}')
                     filtered = self.get_filtered_options()
-                    #if self.portfolio_delta >= 200 or self.portfolio_delta <= -200:
-                    #    wdb.set_trace()
-                    while not filtered.empty:
-                        self.add_positions(filtered)
-                        self.mark_portfolio()
-                        self.find_and_close_positions()
-                        self.mark_portfolio()
-                        self.timestamp_statistics()
-                        self.set_times()
-                        if self.equity < 700000:
-                            wdb.set_trace()
-                        print(f'current time: {self.current_time}')
-                        print(f'portfolio delta: {self.portfolio_delta}')
-                        print(f'cash: {self.cash}, equity: {self.equity}, liabilities: ${self.liabilities}')
-                        filtered = self.get_filtered_options()
-                except Exception as e:
-                    print(f'loading {file} failed')
-                    print(f'exception: {e}')
-                    add_to_corrupted_files(file)
-                    failed = True
-                    continue
+            except Exception as e:
+                print(f'loading {file} failed')
+                print(f'exception: {e}')
+                add_to_corrupted_files(file)
+                failed = True
+                continue
             self.plot()
             add_to_results_files(self.statistics_overtime)
             print(generate_risk_return_metrics_historical()[-1])
@@ -135,7 +159,7 @@ class Simulation:
         negative = negative_deltas(filtered_book)
         deployable_cash = self.cash * self.max_epoch_allocation
         if len(self.positions) == 0:
-            sample = positive.sample()
+            sample = positive.sample() # this is the randomness
             self.allocate_funds(sample, deployable_cash * 0.5)
             self.update_state()
             sample = negative.sample()
@@ -167,7 +191,9 @@ class Simulation:
         self.update_state()
 
     def delta_hedge_from_series(self, option, cash):
+        # how does this figure out how big of a postion to take?
         option_series = option if (isinstance(option, pd.Series)) else option.iloc[0]
+        # Each contract has a delta. and you need to 
         contracts_needed = abs(self.portfolio_delta / option['delta'])
         required_collateral = self.get_collateral_required(option_series)
         contracts = math.floor(contracts_needed)
@@ -181,9 +207,10 @@ class Simulation:
         self.write_allocation(option, contracts)
 
     def ensure_mark_pricing(self, row):
+        # this are already in the data
         days_to_expiration = row['expiration_datetime'] - self.current_time
         row['days_to_expiration'] = days_to_expiration
-        years_to_expiration = timedelta_to_float(days_to_expiration) / 365.25
+        years_to_expiration = timedelta_to_float(row['days_to_expiration']) / 365.25
         if percent_difference_ask_bid(row) > 1 and years_to_expiration > 0:
             bs = BlackScholes(
                 row['type'],
@@ -198,15 +225,19 @@ class Simulation:
             mark_price = bs_price / row['underlying_price']
             row['mark_price'] = mark_price if mark_price > row['bid_price'] else row['bid_price']
         return row
-
-    def load_file_to_dataframe(self, file_path):
-        t = time.process_time()
+    
+    def _load_file_to_dataframe(self, file_path):
         df = pd.read_csv(file_path, compression='gzip', usecols=COLUMNS, dtype=COLUM_TYPES, engine='c', float_precision="legacy")
         eth_only = df[df['symbol'].str.contains("ETH")]
         eth_only['datetime'] = pd.to_datetime(eth_only['timestamp'] * 1000)
         eth_only['expiration_datetime'] = pd.to_datetime(eth_only['expiration'] * 1000)
         eth_only['days_to_expiration'] = eth_only['expiration_datetime'] - eth_only['datetime']
         eth_only.dropna(inplace=True)
+        return eth_only
+
+    def load_file_to_dataframe(self, file_path):
+        t = time.process_time()
+        eth_only = self._load_file_to_dataframe(file_path)
         self.current_day_orderbook = eth_only
         self.median_iv = eth_only['mark_iv'].median()
         elapsed_time = time.process_time() - t
@@ -236,14 +267,20 @@ class Simulation:
         else:
             return option_series['strike_price']
 
-    def get_filtered_options(self, time_only=False):
-        # get current slice of datetime in order book
-        clone = filter_datetime(self.current_day_orderbook, self.current_time, self.end_sample_time)
+    def _filter_orderbook(self, book_df, time_only=False):
+        clone = filter_datetime(
+            book_df,
+            self.current_time,
+            self.end_sample_time)
         if time_only:
             return clone.sort_values(by='timestamp')
         clone = filter_deltas(clone)
         clone = filter_expiration(clone)
         return clone.sort_values(by='timestamp')
+
+    def get_filtered_options(self, time_only=False):
+        # get current slice of datetime in order book
+        return self._filter_orderbook(self.current_day_orderbook, time_only)
 
     def get_files(self):
         files = glob("datasets/*.csv.gz")
@@ -308,23 +345,29 @@ class Simulation:
         self.update_state()
 
     def pick_to_delta_neutral(self, options, positive_delta=True):
+        """ Walk through the options and add it to the picked options if taking it will reduce the delta"""
         new_delta = self.portfolio_delta
         picked_options = pd.DataFrame()
         for i, row in options.iterrows():
+            # I think the ordering matters here
             if (positive_delta and new_delta > 0) or (not positive_delta and new_delta < 0):
                 picked_options.append(row)
                 new_delta = new_delta - row['position_delta']
         return picked_options
 
-    def set_times(self, override=False):
-        first_time = self.current_day_orderbook.iloc[0]['datetime']
+    def _set_times(self, current_day_orderbook, override=False):
+        first_time = current_day_orderbook.iloc[0]['datetime']
         if self.current_time and not override:
             excess_time_gap = first_time - self.current_time > datetime.timedelta(days=1, hours=12)
             self.current_time = self.current_time + pd.DateOffset(hours=3) if not excess_time_gap else first_time
         else:
             self.current_time = first_time
 
-        self.end_sample_time = self.current_time + pd.DateOffset(minutes=30)
+        self.end_sample_time = self.current_time + pd.DateOffset(minutes=30) # only a 30 minute window? 
+
+
+    def set_times(self, override=False):
+        self._set_times(self.current_day_orderbook, override)
 
     def timestamp_statistics(self):
         self.statistics_overtime.append({
@@ -374,7 +417,7 @@ class Simulation:
         stats = pd.DataFrame(self.statistics_overtime)
         for col in stats.columns[1:]:
             ax = stats.plot(stats.index[0], col)
-            plt.savefig('results.png', bbox_inches='tight')
+            plt.savefig(f'{col}_results.png', bbox_inches='tight')
 
-s = Simulation()
-s.run()
+# s = Simulation()
+# s.run()
