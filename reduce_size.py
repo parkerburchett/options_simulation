@@ -1,9 +1,9 @@
-from threading import Thread
 import concurrent.futures
 import datetime
 import pandas as pd
-import numpy as np
 from glob import glob
+from tardis_dev import datasets, get_exchange_details
+import os
 
 COLUMNS = ["symbol", "timestamp", "type", "strike_price", "expiration", "underlying_price", "bid_price", "bid_amount",
            "ask_price", "ask_amount", "mark_price", "mark_iv", "delta", "theta"]
@@ -24,8 +24,9 @@ COLUM_TYPES = {
     'theta': float
 }
 
-def get_files():
-    files = glob("datasets/*.csv.gz")
+def get_files(folder='datasets'):
+    """Get the *.csv.gz files from the folder"""
+    files = glob(f"{folder}/*.csv.gz")
     files.sort()
     return files
 
@@ -50,22 +51,59 @@ def _load_file_to_dataframe(file_path):
 
 
 def reduce_data(a_file:str):
+    """Thead safe read and reduce the size of the options data"""
     save_path = f'reduced_datasets/reduced_{a_file.split("/")[1]}'
     df = _load_file_to_dataframe(a_file)
     df.to_csv(save_path, compression='gzip')
     return (save_path, df.shape)
 
+def get_data():
+    """Save the options data from deribit. Not you need to change the API key here"""
+    API_KEY='my api key'
+    get_exchange_details("deribit")
+    datasets.download(
+        exchange="deribit",
+        data_types=["options_chain"],
+        from_date="2021-09-24", 
+        to_date="2022-04-20", 
+        symbols=["OPTIONS"],
+        api_key=API_KEY,
+    ) 
 
-def run():
-    n_workers = 8
-    # this is just limited by your memory.
-    # I have 64 gigs of ram so I can have a couple going at once
-    file_names = get_files()
+def select_un_reduced_files():
+    """Returns the files in datasets that have not been reduced yet"""
+    files_in_reduced_data = get_files('reduced_datasets')
+    files_in_datasets = get_files('datasets')
+    files_to_save = []
+    for a_file in files_in_datasets:
+        save_path = f'reduced_datasets/reduced_{a_file.split("/")[1]}'
+        if save_path not in files_in_reduced_data:
+            files_to_save.append(a_file)
+    return files_to_save
+
+def concurrent_reduce_size(files_to_save:list[str], n_workers=8) -> None:
+    """
+    Reduce the size of files_to_save with n_worker threads. 
+    n_workers depends on how much ram you have. 8 workers uses about 45 gb of ram.
+    """
     with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor: 
         futures = []
-        for a_file in file_names:
+        for a_file in files_to_save:
             futures.append(executor.submit(reduce_data, a_file=a_file))
         for future in concurrent.futures.as_completed(futures):
             print(future.result())
 
-run() 
+def main():
+    get_data() # you need to put in the api key to get this to run
+    try:
+        os.mkdir('reduced_datasets')
+    except FileExistsError:
+        pass
+    
+    files_to_save = select_un_reduced_files()
+    print(f'You have {len(files_to_save)} files to save')
+    concurrent_reduce_size(files_to_save, 8)
+
+
+if __name__ == '__main__':
+    main() 
