@@ -57,7 +57,7 @@ def reduce_data(a_file:str):
 
 
 def run():
-    n_workers = 4
+    n_workers = 8
     # this is just limited by your memory.
     # I have 64 gigs of ram so I can have a couple going at once
     file_names = get_files()
